@@ -1,0 +1,8 @@
+# nummaterial_velocity_file for 1700 km domain
+# Material 1 = outer core region (was material 3)
+# Material 2 = inner core region (was material 4)
+# Uniform acoustic model: Vp=2750, rho=2000 (matching DFDM benchmark)
+#
+# format: domain_id  material_id  rho  vp  vs  Q_kappa  Q_mu  aniso
+1 1 2000.d0 2750.d0 0.0d0 9999.d0 9999.d0 0
+1 2 2000.d0 2750.d0 0.0d0 9999.d0 9999.d0 0

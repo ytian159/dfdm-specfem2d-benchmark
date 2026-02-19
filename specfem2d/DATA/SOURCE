@@ -1,0 +1,18 @@
+## Source 1 - Matching DFDM Configuration
+## Extracted from DFDM simulation output
+source_surf                     = .false.        # source inside the medium
+xs                              = -836070.0        # source location x in meters (DFDM elem 3, bilinear_interpolate at 0.5,0.5)
+zs                              = 0.0       # source location z in meters (from DFDM, essentially 0)
+source_type                     = 1               # acoustic force
+time_function_type              = 1               # Ricker (2nd derivative of Gaussian)
+name_of_source_file             = YYYYYYYYYYYYYYYYYY   # Only for option 8 : file containing the source wavelet
+burst_band_width                = 0.             # Only for option 9 : band width of the burst
+f0                              = 0.015           # dominant frequency (Hz) - matches DFDM
+tshift                          = 100.0           # time shift: 1.5/f0 = 100.0 s
+anglesource                     = 0.0             # no rotation
+Mxx                             = 1.0             # moment tensor (not used for force source)
+Mzz                             = 1.0
+Mxz                             = 0.0
+factor                          = 1.0e5           # amplitude factor - matches DFDM (1×10⁵) - MUST come after Mxx,Mzz,Mxz!
+vx                              = 0.0             # no moving source
+vz                              = 0.0
