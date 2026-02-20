@@ -1,8 +1,0 @@
-.DS_Store
-plot/sim.out
-plot/*.jpg
-build/
-plot/*.out
-plot/grid*
-temp_test
-tests/test_out/*
