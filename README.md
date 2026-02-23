@@ -30,8 +30,6 @@ git clone --recursive git@github.com:ytian159/dfdm-specfem2d-benchmark.git
 cd dfdm-specfem2d-benchmark
 
 # Build everything: DFDM, mesh generator, and SPECFEM2D
-# (auto-detects Perlmutter, loads modules, clones mesh_gen_ak135,
-#  and rebuilds SPECFEM2D from source since shipped binaries are macOS arm64)
 ./setup.sh
 
 # Get a compute allocation and run
@@ -89,15 +87,6 @@ The `setup.sh` and `run_benchmark.sh` scripts auto-detect Perlmutter and load th
 ```bash
 module load cmake PrgEnv-gnu cray-mpich python
 ```
-
-| Component | macOS/Desktop | Perlmutter |
-|-----------|--------------|------------|
-| MPI launcher | `mpirun -np N` | `srun -n N` |
-| C++ compiler | `g++` | `CC` (Cray wrapper) |
-| Fortran compiler | `gfortran` | `ftn` (Cray wrapper) |
-| OpenBLAS | Homebrew / system | `/pscratch/sd/m/mgawan/openblas_install/` |
-| Python packages | `pip3 install -r requirements.txt` | `module load python` (pre-installed) |
-| Job submission | Direct execution | SLURM (`salloc` / `sbatch`) |
 
 ## Usage
 
@@ -204,30 +193,7 @@ Override via environment variables: `DFDM_PPW`, `DFDM_ORDER`, `DFDM_GAUSS_ORDER`
 
 The DFDM source is included as a git submodule pointing to your fork ([ytian159/DFDM_2D_1.0](https://github.com/ytian159/DFDM_2D_1.0)), which tracks the upstream [mgawan/DFDM_2D_1.0](https://github.com/mgawan/DFDM_2D_1.0).
 
-### Making changes to DFDM
 
-```bash
-cd DFDM_2D_1.0
-
-# Make changes to source code
-vim src/simulation.cpp
-
-# Commit and push to your fork
-git add src/simulation.cpp
-git commit -m "Update simulation logic"
-git push origin main
-
-# Update benchmark repo to track new commit
-cd ..
-git add DFDM_2D_1.0
-git commit -m "Update DFDM submodule to latest"
-git push
-```
-
-### Submitting changes upstream
-
-1. Push changes to your fork (`ytian159/DFDM_2D_1.0`)
-2. Create a pull request on GitHub from your fork to `mgawan/DFDM_2D_1.0`
 
 ### Updating DFDM from upstream
 
