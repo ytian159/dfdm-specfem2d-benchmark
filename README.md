@@ -346,16 +346,7 @@ salloc -C cpu -N 1 --cpus-per-task=16 --ntasks-per-node=4 -q interactive -A m466
 - Normal: SPECFEM2D uses bilinear interpolation from DFDM's GLL grid
 - Documented in `compute_dfdm_coordinates.py`
 
-## References
 
-- **DFDM**: Yuan, Y.O., Simons, F.J., & Tromp, J. (2020). "Double-difference adjoint seismic tomography". *Geophysical Journal International*, 206(3), 1599-1618.
-- **SPECFEM2D**: Tromp, J., Komatitsch, D., & Liu, Q. (2008). "Spectral-element and adjoint methods in seismology". *Communications in Computational Physics*, 3(1), 1-32.
-
-## License
-
-- DFDM: See [ytian159/DFDM_2D_1.0](https://github.com/ytian159/DFDM_2D_1.0)
-- SPECFEM2D: GPL v3 (see [SPECFEM/specfem2d](https://github.com/SPECFEM/specfem2d))
-- This benchmark: MIT (see LICENSE)
 
 ## Contact
 
