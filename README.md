@@ -61,13 +61,6 @@ dfdm-specfem2d-benchmark/
 └── requirements.txt          # Python dependencies
 ```
 
-## Prerequisites
-
-- **Compilers**: cmake (≥3.22), MPI, GCC (with OpenMP), gfortran
-- **Libraries**: OpenBLAS (or system BLAS)
-- **Python 3**: numpy, matplotlib, scipy
-- **Tools**: git
-
 ### Installation (macOS)
 ```bash
 brew install cmake open-mpi gcc openblas python3
