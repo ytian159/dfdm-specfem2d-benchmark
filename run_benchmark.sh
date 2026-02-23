@@ -79,6 +79,9 @@ SPECFEM_STATIONS="${SPECFEM_DIR}/DATA/STATIONS"
 
 # DFDM MPI tasks
 DFDM_NPROC=4
+# Source element: must match the xs/zs coordinates in specfem2d/DATA/SOURCE
+# (both are set to element 3 = xs=-836070.0, zs=0.0)
+DFDM_SOURCE_ELEM=${DFDM_SOURCE_ELEM:-3}
 # Always record all 9 benchmark receivers in DFDM output files
 DFDM_RECEIVER_ELEMS=${DFDM_RECEIVER_ELEMS:-"[0, 1, 2, 3, 4, 5, 6, 7, 8]"}
 
@@ -208,7 +211,7 @@ function print_profile_info() {
     echo ""
     echo "--- Precision Profile: ${PROFILE} ---"
     echo "  DFDM:   ppw=${DFDM_PPW}, order=${DFDM_ORDER}, gauss_order=${DFDM_GAUSS_ORDER}"
-    echo "          receiver_elements=${DFDM_RECEIVER_ELEMS}"
+    echo "          source_element=${DFDM_SOURCE_ELEM}, receiver_elements=${DFDM_RECEIVER_ELEMS}"
     echo "  SPECFEM: time_scheme=${SPECFEM_TIME_SCHEME} (1=Newmark, 2=LDDRK4-6, 3=RK4)"
     echo "  DT=${DT}, NSTEP=${NSTEP}, total=${TOTAL_SIM_TIME}s"
     echo "  DFDM output:    ${DFDM_OUTPUT_DIR}"
@@ -237,10 +240,11 @@ function apply_dfdm_config() {
     sed_inplace "s/^order_b1 = .*/order_b1 = $DFDM_ORDER/" "$DFDM_CONFIG"
     sed_inplace "s/^order_b2 = .*/order_b2 = $DFDM_ORDER/" "$DFDM_CONFIG"
     sed_inplace "s/^gauss_order = .*/gauss_order = $DFDM_GAUSS_ORDER/" "$DFDM_CONFIG"
+    sed_inplace "s/^source_element = .*/source_element = $DFDM_SOURCE_ELEM/" "$DFDM_CONFIG"
     sed_inplace "s/^receiver_elements = .*/receiver_elements = $DFDM_RECEIVER_ELEMS/" "$DFDM_CONFIG"
 
     echo "  Config updated: $DFDM_CONFIG"
-    grep -E "^(ppw|order_b|gauss_order|delta_t|time_steps|NCPUs|receiver_elements)" "$DFDM_CONFIG"
+    grep -E "^(ppw|order_b|gauss_order|delta_t|time_steps|NCPUs|source_element|receiver_elements)" "$DFDM_CONFIG"
 }
 
 function regenerate_dfdm_mesh() {
