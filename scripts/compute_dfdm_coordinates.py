@@ -99,6 +99,65 @@ def nearest_grid_point_to_mean(gx, gz):
     return gx[ci, cj], gz[ci, cj], ci, cj
 
 
+def find_virtual_receivers_on_grid(data_dir, source_elem, source_x, source_z,
+                                    target_distances_km=(50, 100, 200, 300),
+                                    margin_frac=0.1):
+    """Pick grid points within the source element at target distances from source.
+
+    Selects exact DFDM grid points so virtual receiver extraction is precise.
+    Prefers z > 0 direction (angular) at roughly constant depth.
+
+    Args:
+        data_dir: DFDM output directory containing grid files
+        source_elem: source element ID
+        source_x, source_z: source coordinates (bilinear center)
+        target_distances_km: desired distances from source in km
+        margin_frac: fraction of grid extent to avoid at boundaries
+
+    Returns:
+        list of (rec_name, x, z, row_idx, col_idx) tuples
+    """
+    gx = np.genfromtxt(os.path.join(data_dir, f"grid_x_{source_elem}"), delimiter=',')
+    gz = np.genfromtxt(os.path.join(data_dir, f"grid_z_{source_elem}"), delimiter=',')
+    Nx, Nz = gx.shape
+
+    # Compute distance from source for all grid points
+    dist_from_source = np.sqrt((gx - source_x)**2 + (gz - source_z)**2)
+
+    # Create margin mask to avoid boundary grid points
+    margin_r = int(max(1, Nx * margin_frac))
+    margin_c = int(max(1, Nz * margin_frac))
+    interior_mask = np.zeros_like(gx, dtype=bool)
+    interior_mask[margin_r:Nx-margin_r, margin_c:Nz-margin_c] = True
+
+    # Prefer z > 0 direction (positive angular direction)
+    prefer_mask = interior_mask & (gz > source_z)
+
+    virtual_receivers = []
+    rec_idx = 10  # start at REC10
+
+    for target_km in target_distances_km:
+        target_m = target_km * 1e3
+
+        # Find grid point closest to target distance, preferring z > 0
+        cost = np.abs(dist_from_source - target_m)
+        cost[~prefer_mask] = 1e20  # penalize boundary and z < 0 points
+
+        best_idx = np.unravel_index(np.argmin(cost), gx.shape)
+        best_x = float(gx[best_idx])
+        best_z = float(gz[best_idx])
+        actual_dist = float(dist_from_source[best_idx])
+
+        rec_name = f"REC{rec_idx}"
+        virtual_receivers.append((rec_name, best_x, best_z, int(best_idx[0]), int(best_idx[1])))
+        print(f"    {rec_name}: grid[{best_idx[0]},{best_idx[1]}] = "
+              f"({best_x:.1f}, {best_z:.1f}) m, "
+              f"dist={actual_dist/1e3:.1f} km (target {target_km} km)")
+        rec_idx += 1
+
+    return virtual_receivers
+
+
 def count_elements(data_dir):
     """Count the number of elements by looking for grid_x_N files."""
     n = 0
@@ -155,8 +214,12 @@ def get_source_bilinear_coordinates(all_coords, source_elem):
     return float(src['bil_x']), float(src['bil_z'])
 
 
-def write_stations_file(all_coords, source_elem, stations_path):
-    """Write SPECFEM2D STATIONS file with coordinates matching DFDM grid."""
+def write_stations_file(all_coords, source_elem, stations_path, virtual_receivers=None):
+    """Write SPECFEM2D STATIONS file with coordinates matching DFDM grid.
+
+    Includes both element-center receivers (REC01-09) and virtual receivers
+    (REC10+) so SPECFEM records at the same locations as DFDM virtual extraction.
+    """
     # Element-to-SPECFEM receiver mapping
     # REC01-03 = high-res receivers (elem 1,2,3)
     # REC04-09 = virtual receivers (elem 0,4,5,6,7,8)
@@ -171,13 +234,19 @@ def write_stations_file(all_coords, source_elem, stations_path):
         c = all_coords[eid]
         lines.append(f"{rec_name:<10s} SY  {c['x']:16.4f}  {c['z']:16.4f}  0.0  0.0")
 
+    # Add virtual receivers (REC10+) at exact grid-point positions
+    if virtual_receivers:
+        for rec_name, vx, vz, _, _ in virtual_receivers:
+            lines.append(f"{rec_name:<10s} SY  {vx:16.4f}  {vz:16.4f}  0.0  0.0")
+
     with open(stations_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
-    print(f"  Wrote STATIONS file: {stations_path} ({len(lines)} receivers)")
+    n_virt = len(virtual_receivers) if virtual_receivers else 0
+    print(f"  Wrote STATIONS file: {stations_path} ({len(lines)} receivers: 9 element + {n_virt} virtual)")
 
 
-def write_coords_json(all_coords, source_elem, json_path):
+def write_coords_json(all_coords, source_elem, json_path, virtual_receivers=None):
     """Write coordinates JSON for compare_snapshots.py to consume."""
     # Build the structure that compare_snapshots.py expects
     elem_order = [1, 2, 3, 0, 4, 5, 6, 7, 8]
@@ -211,10 +280,23 @@ def write_coords_json(all_coords, source_elem, json_path):
             'method': c['method'], 'grid_shape': c['grid_shape'],
         }
 
+    # Add virtual receivers at exact DFDM grid points within source element
+    if virtual_receivers:
+        for rec_name, virt_x, virt_z, row_idx, col_idx in virtual_receivers:
+            output['all_receivers'][rec_name] = {
+                'elem_id': source_elem,
+                'x': float(virt_x),
+                'z': float(virt_z),
+                'method': 'virtual',
+                'grid_shape': all_coords[source_elem]['grid_shape'],
+                'grid_index': [row_idx, col_idx],
+            }
+
     with open(json_path, 'w') as f:
         json.dump(output, f, indent=2)
 
-    print(f"  Wrote coords JSON: {json_path}")
+    n_virt = len(virtual_receivers) if virtual_receivers else 0
+    print(f"  Wrote coords JSON: {json_path} (9 element receivers + {n_virt} virtual)")
 
 
 def main():
@@ -256,12 +338,19 @@ def main():
               f"  ({c['x']:14.2f}, {c['z']:14.2f}) m"
               f"  dist={dist/1e3:8.1f} km  [{c['method']}]{marker}")
 
+    # Find virtual receiver grid points within source element
+    print(f"\n  Finding virtual receivers on element {source_elem} grid...")
+    virtual_receivers = find_virtual_receivers_on_grid(
+        args.dfdm_data_dir, source_elem, src_x, src_z,
+        target_distances_km=(50, 100, 200, 300),
+    )
+
     # Write output files if requested
     if args.stations_out:
-        write_stations_file(all_coords, source_elem, args.stations_out)
+        write_stations_file(all_coords, source_elem, args.stations_out, virtual_receivers)
 
     if args.coords_json_out:
-        write_coords_json(all_coords, source_elem, args.coords_json_out)
+        write_coords_json(all_coords, source_elem, args.coords_json_out, virtual_receivers)
 
     # Always print STATIONS content for reference
     elem_order = [1, 2, 3, 0, 4, 5, 6, 7, 8]
@@ -272,6 +361,8 @@ def main():
         if eid in all_coords:
             c = all_coords[eid]
             print(f"  {rec_name:<10s} SY  {c['x']:16.4f}  {c['z']:16.4f}  0.0  0.0")
+    for rec_name, vx, vz, ri, ci in virtual_receivers:
+        print(f"  {rec_name:<10s} SY  {vx:16.4f}  {vz:16.4f}  0.0  0.0  [grid {ri},{ci}]")
 
 
 if __name__ == "__main__":
