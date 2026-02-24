@@ -78,10 +78,7 @@ COORD_SCRIPT="${SCRIPT_DIR}/scripts/compute_dfdm_coordinates.py"
 SPECFEM_STATIONS="${SPECFEM_DIR}/DATA/STATIONS"
 
 # DFDM MPI tasks
-DFDM_NPROC=4
-# Source element: must match the xs/zs coordinates in specfem2d/DATA/SOURCE
-# (both are set to element 3 = xs=-836070.0, zs=0.0)
-DFDM_SOURCE_ELEM=${DFDM_SOURCE_ELEM:-3}
+DFDM_NPROC=${DFDM_NPROC:-4}
 # Always record all 9 benchmark receivers in DFDM output files
 DFDM_RECEIVER_ELEMS=${DFDM_RECEIVER_ELEMS:-"[0, 1, 2, 3, 4, 5, 6, 7, 8]"}
 
@@ -109,12 +106,13 @@ SPECFEM_NPROC=${2:-4}
 # Profiles set sensible defaults; env vars override profile values.
 # ================================================================
 
-PROFILE=${PROFILE:-highres}
+PROFILE=${PROFILE:-baseline}
 
 # Set profile defaults
 case "$PROFILE" in
     "baseline")
         _PPW=3.0; _ORDER=5; _GAUSS=6; _SCHEME=1; _DT=0.1
+        _SPECFEM_REF_DIR="${SCRIPT_DIR}/specfem2d_mf8"
         ;;
     "highres")
         _PPW=5.0; _ORDER=7; _GAUSS=6; _SCHEME=1; _DT=0.1

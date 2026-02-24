@@ -112,6 +112,14 @@ DFDM_ELEM_TO_SPECFEM = {
     8: "REC09",
 }
 
+# Virtual receivers map to source element for SPECFEM lookup
+VIRTUAL_RECEIVER_SPECFEM_NAMES = {
+    "REC10": "REC10",
+    "REC11": "REC11",
+    "REC12": "REC12",
+    "REC13": "REC13",
+}
+
 
 def _load_dfdm_receiver_elements(config_path):
     receiver_elems = {1, 2, 3}
@@ -254,6 +262,71 @@ def load_dfdm_receiver_pressure(data_dir, elem_id, rho):
     return t, dt, rho * d2u_dt2
 
 
+def load_dfdm_virtual_receiver_pressure(data_dir, elem_id, virt_x, virt_z, rho, dt, snap_interval):
+    """Extract DFDM pressure time series from snapshots at nearest grid point.
+
+    For virtual receivers that don't have dedicated receiver files,
+    extract data from wavefield snapshots at the nearest grid point.
+    The actual snapshot interval is auto-detected from the element's files,
+    since the source element may have every-timestep snapshots while other
+    elements are saved less frequently.
+    """
+    # Load grid for the element
+    gx = np.genfromtxt(f"{data_dir}/grid_x_{elem_id}", delimiter=",")
+    gz = np.genfromtxt(f"{data_dir}/grid_z_{elem_id}", delimiter=",")
+
+    # Find nearest grid point to virtual receiver
+    dist = np.sqrt((gx - virt_x)**2 + (gz - virt_z)**2)
+    min_idx = np.unravel_index(np.argmin(dist), gx.shape)
+
+    # Read snapshots at this grid point
+    import glob
+    snapshot_files = sorted(glob.glob(f"{data_dir}/elem_{elem_id}_*.out"))
+    if len(snapshot_files) < 3:
+        print(f"  WARNING: Not enough snapshots for elem {elem_id}, falling back to receiver file")
+        return load_dfdm_receiver_pressure(data_dir, elem_id, rho)
+
+    # Extract step numbers from filenames
+    steps = []
+    for f in snapshot_files:
+        base = os.path.basename(f)
+        step = int(base.replace(f"elem_{elem_id}_", "").replace(".out", ""))
+        steps.append(step)
+    steps = np.array(sorted(steps))
+
+    # Auto-detect actual snapshot interval for this element
+    if len(steps) >= 2:
+        step_diffs = np.diff(steps)
+        from collections import Counter
+        actual_interval = Counter(step_diffs.tolist()).most_common(1)[0][0]
+    else:
+        actual_interval = snap_interval  # fallback to global
+    actual_snap_dt = actual_interval * dt
+
+    # Load potential values at the grid point from each snapshot
+    u_timeseries = []
+    for step in steps:
+        snap_file = f"{data_dir}/elem_{elem_id}_{step}.out"
+        if os.path.exists(snap_file):
+            u_snap = np.genfromtxt(snap_file, delimiter=",")
+            u_timeseries.append(u_snap[min_idx])
+        else:
+            u_timeseries.append(0.0)
+
+    u_timeseries = np.array(u_timeseries)
+    t = steps * dt
+
+    # Compute pressure from second time derivative using actual interval
+    n = len(u_timeseries)
+    d2u_dt2 = np.zeros(n)
+    d2u_dt2[1:-1] = (u_timeseries[2:] - 2 * u_timeseries[1:-1] + u_timeseries[:-2]) / (actual_snap_dt ** 2)
+    if n > 2:
+        d2u_dt2[0] = (u_timeseries[2] - 2 * u_timeseries[1] + u_timeseries[0]) / (actual_snap_dt ** 2)
+        d2u_dt2[-1] = (u_timeseries[-1] - 2 * u_timeseries[-2] + u_timeseries[-3]) / (actual_snap_dt ** 2)
+
+    return t, actual_snap_dt, rho * d2u_dt2
+
+
 def plot_snapshot(ax, x_km, z_km, values, title, vmin, vmax):
     mask_r = np.sqrt(x_km ** 2 + z_km ** 2) <= R_DOMAIN * 1.05
     x_plot, z_plot, v_plot = x_km[mask_r], z_km[mask_r], values[mask_r]
@@ -379,7 +452,7 @@ def plot_pressure_difference_panel(ax, rec_name, elem_id, time_after_peak, dfdm_
 
 def main():
     print("=" * 60)
-    print("DFDM vs SPECFEM2D Pressure Comparison (9 receivers)")
+    print("DFDM vs SPECFEM2D Pressure Comparison")
     print("Output: one pressure figure per time step")
     print(f"  DT={DT}, NSTEP={TOTAL_NSTEP}, SNAP_INTERVAL={DFDM_SNAP_INTERVAL}")
     print(f"  DFDM config: {DFDM_CONFIG}")
@@ -410,20 +483,40 @@ def main():
     print("\nLoading DFDM receiver data...")
     dfdm_rec = {}
     for rec_name, (elem_id, rx, rz) in ALL_RECEIVERS.items():
-        t, rec_dt, pressure = load_dfdm_receiver_pressure(DFDM_DATA_DIR, elem_id, RHO)
+        # Check if this is a virtual receiver
+        is_virtual = rec_name in VIRTUAL_RECEIVER_SPECFEM_NAMES
+
+        if is_virtual:
+            # Extract from snapshots at the virtual receiver location
+            t, rec_dt, pressure = load_dfdm_virtual_receiver_pressure(
+                DFDM_DATA_DIR, elem_id, rx, rz, RHO, DT, DFDM_SNAP_INTERVAL
+            )
+        else:
+            # Use dedicated receiver file
+            t, rec_dt, pressure = load_dfdm_receiver_pressure(DFDM_DATA_DIR, elem_id, RHO)
+
         t_aligned = t - DFDM_SOURCE_PEAK
 
         dfdm_rec[rec_name] = {"t": t_aligned, "pressure": pressure}
         dist = np.sqrt((rx - SOURCE[0]) ** 2 + (rz - SOURCE[1]) ** 2) / 1e3
+        method_str = "[virtual from snapshots]" if is_virtual else ""
         print(
             f"  {rec_name} (elem {elem_id}, dt={rec_dt:.2f}s): "
-            f"dist={dist:.0f}km, pressure max={np.max(np.abs(pressure)):.3e}"
+            f"dist={dist:.0f}km, pressure max={np.max(np.abs(pressure)):.3e} {method_str}"
         )
 
     print("\nLoading SPECFEM2D pressure seismograms...")
     specfem_rec = {}
     for rec_name, (elem_id, _, _) in ALL_RECEIVERS.items():
-        sem_name = DFDM_ELEM_TO_SPECFEM[elem_id]
+        # Check if this is a virtual receiver or element receiver
+        if rec_name in VIRTUAL_RECEIVER_SPECFEM_NAMES:
+            sem_name = VIRTUAL_RECEIVER_SPECFEM_NAMES[rec_name]
+        else:
+            sem_name = DFDM_ELEM_TO_SPECFEM.get(elem_id, None)
+            if sem_name is None:
+                print(f"  {rec_name}: No SPECFEM mapping for element {elem_id}")
+                continue
+
         t_pre, v_pre = load_specfem_pressure_seismogram(SPECFEM_OUTPUT_DIR, sem_name)
         if t_pre is None:
             specfem_rec[rec_name] = None
