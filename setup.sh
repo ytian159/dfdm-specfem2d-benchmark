@@ -13,6 +13,23 @@
 
 set -e
 
+# ===================== Platform Detection =====================
+if [ -n "$NERSC_HOST" ] || hostname | grep -qE '(login|nid).*\.perlmutter'; then
+    ON_PERLMUTTER=true
+else
+    ON_PERLMUTTER=false
+fi
+
+# Load modules on Perlmutter
+if [ "$ON_PERLMUTTER" = true ]; then
+    module load cmake PrgEnv-gnu cray-mpich python 2>/dev/null || true
+    export OPEN_BLAS_CMAKE_PATH=/pscratch/sd/m/mgawan/openblas_install/OpenBLAS/install/lib/cmake
+    export OMP_NUM_THREADS=${OMP_NUM_THREADS:-16}
+    CXX_COMPILER="CC"  # Cray wrapper (includes MPI)
+else
+    CXX_COMPILER=""  # let cmake auto-detect
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DFDM_DIR="${SCRIPT_DIR}/DFDM_2D_1.0"
 DFDM_BUILD_DIR="${DFDM_DIR}/build"
@@ -21,6 +38,7 @@ MESH_GEN_DIR="${DFDM_DIR}/mesh_gen_ak135"
 MESH_GEN_BUILD_DIR="${MESH_GEN_DIR}/build"
 MESH_GEN_EXEC="${MESH_GEN_BUILD_DIR}/mesh_gen"
 OPENBLAS_INSTALL="${DFDM_DIR}/openblas_install"
+SPECFEM2D_SRC_DIR="${SCRIPT_DIR}/specfem2d_src"
 
 FORCE=false
 CHECK_ONLY=false
@@ -44,7 +62,12 @@ function check_prerequisites() {
     local missing=()
 
     command -v cmake >/dev/null 2>&1 || missing+=("cmake (>=3.22)")
-    command -v mpirun >/dev/null 2>&1 || missing+=("MPI (mpirun)")
+    if [ "$ON_PERLMUTTER" = true ]; then
+        command -v srun >/dev/null 2>&1 || missing+=("srun (SLURM)")
+        command -v CC >/dev/null 2>&1 || missing+=("Cray C++ wrapper (CC)")
+    else
+        command -v mpirun >/dev/null 2>&1 || missing+=("MPI (mpirun)")
+    fi
     command -v python3 >/dev/null 2>&1 || missing+=("python3")
 
     if [ ${#missing[@]} -gt 0 ]; then
@@ -53,8 +76,9 @@ function check_prerequisites() {
             echo "  - $m"
         done
         echo ""
-        echo "Install on macOS:  brew install cmake open-mpi gcc openblas python3"
-        echo "Install on Ubuntu: apt install cmake libopenmpi-dev gfortran libopenblas-dev python3"
+        echo "Install on macOS:       brew install cmake open-mpi gcc openblas python3"
+        echo "Install on Ubuntu:      apt install cmake libopenmpi-dev gfortran libopenblas-dev python3"
+        echo "On NERSC Perlmutter:    module load cmake PrgEnv-gnu cray-mpich"
         return 1
     fi
 
@@ -93,8 +117,14 @@ function build_dfdm() {
 
     local cmake_args="-DCMAKE_BUILD_TYPE=Release"
 
-    # Use bundled OpenBLAS install if available
-    if [ -d "$OPENBLAS_INSTALL" ]; then
+    # On Perlmutter, use Cray C++ wrapper and system OpenBLAS
+    if [ -n "$CXX_COMPILER" ]; then
+        cmake_args="${cmake_args} -DCMAKE_CXX_COMPILER=${CXX_COMPILER}"
+    fi
+    if [ -n "$OPEN_BLAS_CMAKE_PATH" ]; then
+        cmake_args="${cmake_args} -DCMAKE_PREFIX_PATH=${OPEN_BLAS_CMAKE_PATH}"
+        echo "  Using OpenBLAS: ${OPEN_BLAS_CMAKE_PATH}"
+    elif [ -d "$OPENBLAS_INSTALL" ]; then
         cmake_args="${cmake_args} -DCMAKE_PREFIX_PATH=${OPENBLAS_INSTALL}"
         echo "  Using bundled OpenBLAS: ${OPENBLAS_INSTALL}"
     fi
@@ -124,7 +154,12 @@ function build_mesh_gen() {
 
     local cmake_args="-DCMAKE_BUILD_TYPE=Release"
 
-    if [ -d "$OPENBLAS_INSTALL" ]; then
+    if [ -n "$CXX_COMPILER" ]; then
+        cmake_args="${cmake_args} -DCMAKE_CXX_COMPILER=${CXX_COMPILER}"
+    fi
+    if [ -n "$OPEN_BLAS_CMAKE_PATH" ]; then
+        cmake_args="${cmake_args} -DCMAKE_PREFIX_PATH=${OPEN_BLAS_CMAKE_PATH}"
+    elif [ -d "$OPENBLAS_INSTALL" ]; then
         cmake_args="${cmake_args} -DCMAKE_PREFIX_PATH=${OPENBLAS_INSTALL}"
     fi
 
@@ -139,6 +174,80 @@ function build_mesh_gen() {
         echo "ERROR: Mesh generator build failed"
         exit 1
     fi
+}
+
+function clone_mesh_gen() {
+    log_step "Cloning DFDM mesh generator (mesh_gen_ak135)"
+
+    local MESH_GEN_REPO="https://github.com/mgawan/mesh_gen.git"
+    git clone -b ak135 "$MESH_GEN_REPO" "$MESH_GEN_DIR" || {
+        echo "ERROR: Failed to clone mesh_gen. Trying SSH..."
+        git clone -b ak135 "git@github.com:mgawan/mesh_gen.git" "$MESH_GEN_DIR" || {
+            echo "ERROR: Failed to clone mesh_gen via SSH"
+            exit 1
+        }
+    }
+
+    cd "$MESH_GEN_DIR"
+    git submodule init && git submodule update
+    cd - > /dev/null
+
+    echo "  Mesh generator cloned: ${MESH_GEN_DIR}"
+}
+
+function check_specfem_platform() {
+    # Check if SPECFEM2D binaries match the current platform
+    local binary="${SCRIPT_DIR}/specfem2d/bin/xspecfem2D"
+    if [ ! -f "$binary" ]; then
+        return 1  # missing
+    fi
+    # Check if the binary is for this platform
+    local fmt
+    fmt=$(file "$binary" 2>/dev/null)
+    case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64)
+            echo "$fmt" | grep -q "ELF 64-bit.*x86-64" && return 0 ;;
+        Darwin-arm64)
+            echo "$fmt" | grep -q "Mach-O.*arm64" && return 0 ;;
+        Darwin-x86_64)
+            echo "$fmt" | grep -q "Mach-O.*x86_64" && return 0 ;;
+    esac
+    return 1  # wrong platform
+}
+
+function build_specfem() {
+    log_step "Building SPECFEM2D from source"
+
+    if [ ! -d "$SPECFEM2D_SRC_DIR" ]; then
+        echo "  Cloning SPECFEM2D source..."
+        git clone "https://github.com/SPECFEM/specfem2d.git" "$SPECFEM2D_SRC_DIR" 2>/dev/null || \
+        git clone "git@github.com:SPECFEM/specfem2d.git" "$SPECFEM2D_SRC_DIR" || {
+            echo "ERROR: Failed to clone SPECFEM2D"
+            exit 1
+        }
+    fi
+
+    cd "$SPECFEM2D_SRC_DIR"
+
+    if [ "$ON_PERLMUTTER" = true ]; then
+        MPI_INC="$CRAY_MPICH_DIR/include" \
+        MPI_LIBS="$CRAY_MPICH_DIR/lib" \
+        ./configure FC=ftn CC=cc CXX=CC MPIFC=ftn --with-mpi
+    else
+        ./configure FC=gfortran MPIFC=mpif90
+    fi
+
+    make all
+
+    # Copy binaries to benchmark directories
+    for dest in "${SCRIPT_DIR}/specfem2d/bin" "${SCRIPT_DIR}/specfem2d_mf8/bin"; do
+        mkdir -p "$dest"
+        cp bin/xmeshfem2D "$dest/"
+        cp bin/xspecfem2D "$dest/"
+    done
+
+    cd - > /dev/null
+    echo "  SPECFEM2D built and installed."
 }
 
 # ===================== Main =====================
@@ -177,19 +286,36 @@ else
     echo "  DFDM solver already built. Use --force to rebuild."
 fi
 
+# Clone mesh_gen_ak135 if missing
+if [ ! -d "$MESH_GEN_DIR/src" ]; then
+    if [ "$CHECK_ONLY" = true ]; then
+        echo "  Mesh generator source: MISSING (run setup without --check to clone)"
+    else
+        clone_mesh_gen
+    fi
+fi
+
 if [ "$FORCE" = true ] || [ "$MESH_OK" = false ]; then
-    build_mesh_gen
+    if [ "$CHECK_ONLY" != true ]; then
+        build_mesh_gen
+    fi
 else
     echo "  Mesh generator already built. Use --force to rebuild."
 fi
 
-if [ "$SPECFEM_MESH_OK" = false ] || [ "$SPECFEM_SOLVE_OK" = false ]; then
-    echo ""
-    echo "NOTE: SPECFEM2D binaries are not present."
-    echo "  To use SPECFEM2D, compile it separately and copy the binaries:"
-    echo "    cp /path/to/specfem2d/bin/xmeshfem2D ${SCRIPT_DIR}/specfem2d/bin/"
-    echo "    cp /path/to/specfem2d/bin/xspecfem2D ${SCRIPT_DIR}/specfem2d/bin/"
-    echo "  (Also copy to specfem2d_mf8/bin/ if using highres profile)"
+# Build SPECFEM2D if binaries are missing or wrong platform
+if ! check_specfem_platform || [ "$FORCE" = true ]; then
+    if [ "$CHECK_ONLY" = true ]; then
+        if [ "$SPECFEM_MESH_OK" = false ] || [ "$SPECFEM_SOLVE_OK" = false ]; then
+            echo "  SPECFEM2D binaries: MISSING"
+        else
+            echo "  SPECFEM2D binaries: WRONG PLATFORM (run setup without --check to rebuild)"
+        fi
+    else
+        build_specfem
+    fi
+else
+    echo "  SPECFEM2D binaries already present for this platform."
 fi
 
 echo ""

@@ -29,10 +29,32 @@
 #   - DFDM built via setup.sh (or pre-built binaries present)
 #   - SPECFEM2D compiled with MPI (xmeshfem2D and xspecfem2D in bin/)
 #   - Python 3 with numpy, matplotlib, scipy
-#   - OpenMPI (mpirun)
+#   - MPI: OpenMPI (mpirun) or Cray MPICH (srun on NERSC Perlmutter)
 # ==============================================================================
 
 set -e
+
+# ===================== Platform Detection =====================
+# Detect if we're on NERSC Perlmutter and configure accordingly
+if [ -n "$NERSC_HOST" ] || hostname | grep -qE '(login|nid).*\.perlmutter'; then
+    ON_PERLMUTTER=true
+else
+    ON_PERLMUTTER=false
+fi
+
+# MPI launcher: srun on Perlmutter, mpirun elsewhere
+if [ "$ON_PERLMUTTER" = true ]; then
+    MPI_RUN="srun -n"
+else
+    MPI_RUN="mpirun -np"
+fi
+
+# ===================== Environment Setup (Perlmutter) =====================
+if [ "$ON_PERLMUTTER" = true ]; then
+    module load cmake PrgEnv-gnu cray-mpich python 2>/dev/null || true
+    export OPEN_BLAS_CMAKE_PATH=/pscratch/sd/m/mgawan/openblas_install/OpenBLAS/install/lib/cmake
+    export OMP_NUM_THREADS=${OMP_NUM_THREADS:-16}
+fi
 
 # ===================== Base Paths (relative to this script) =====================
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -187,7 +209,7 @@ function print_profile_info() {
     echo ""
     echo "--- Precision Profile: ${PROFILE} ---"
     echo "  DFDM:   ppw=${DFDM_PPW}, order=${DFDM_ORDER}, gauss_order=${DFDM_GAUSS_ORDER}"
-    echo "          receiver_elements=${DFDM_RECEIVER_ELEMS}"
+    echo "          source_element=${DFDM_SOURCE_ELEM}, receiver_elements=${DFDM_RECEIVER_ELEMS}"
     echo "  SPECFEM: time_scheme=${SPECFEM_TIME_SCHEME} (1=Newmark, 2=LDDRK4-6, 3=RK4)"
     echo "  DT=${DT}, NSTEP=${NSTEP}, total=${TOTAL_SIM_TIME}s"
     echo "  DFDM output:    ${DFDM_OUTPUT_DIR}"
@@ -216,10 +238,11 @@ function apply_dfdm_config() {
     sed_inplace "s/^order_b1 = .*/order_b1 = $DFDM_ORDER/" "$DFDM_CONFIG"
     sed_inplace "s/^order_b2 = .*/order_b2 = $DFDM_ORDER/" "$DFDM_CONFIG"
     sed_inplace "s/^gauss_order = .*/gauss_order = $DFDM_GAUSS_ORDER/" "$DFDM_CONFIG"
+    sed_inplace "s/^source_element = .*/source_element = $DFDM_SOURCE_ELEM/" "$DFDM_CONFIG"
     sed_inplace "s/^receiver_elements = .*/receiver_elements = $DFDM_RECEIVER_ELEMS/" "$DFDM_CONFIG"
 
     echo "  Config updated: $DFDM_CONFIG"
-    grep -E "^(ppw|order_b|gauss_order|delta_t|time_steps|NCPUs|receiver_elements)" "$DFDM_CONFIG"
+    grep -E "^(ppw|order_b|gauss_order|delta_t|time_steps|NCPUs|source_element|receiver_elements)" "$DFDM_CONFIG"
 }
 
 function regenerate_dfdm_mesh() {
@@ -319,7 +342,7 @@ function run_dfdm() {
     rel_output=$(python3 -c "import os; print(os.path.relpath('${DFDM_OUTPUT_DIR}', '${DFDM_BUILD_DIR}'))")
 
     cd "$DFDM_BUILD_DIR"
-    mpirun -np $DFDM_NPROC ./dfdm \
+    $MPI_RUN $DFDM_NPROC ./dfdm \
         --config-file ../config/config.toml \
         --output-directory "./${rel_output}/" \
         --mesh-input-directory ../mesh_gen_ak135/build/output_test/ \
@@ -377,7 +400,7 @@ function run_specfem() {
     if [ "$nproc" -eq 1 ]; then
         ./bin/xmeshfem2D 2>&1 | tee "${SPECFEM_DEFAULT_OUTPUT}/output_mesher.log"
     else
-        mpirun -np $nproc ./bin/xmeshfem2D 2>&1 | tee "${SPECFEM_DEFAULT_OUTPUT}/output_mesher.log"
+        $MPI_RUN $nproc ./bin/xmeshfem2D 2>&1 | tee "${SPECFEM_DEFAULT_OUTPUT}/output_mesher.log"
     fi
     local t_mesh_end=$(get_time)
     log_time "SPECFEM2D mesher (${nproc} procs)" "$t_mesh_start" "$t_mesh_end"
@@ -388,7 +411,7 @@ function run_specfem() {
     if [ "$nproc" -eq 1 ]; then
         ./bin/xspecfem2D 2>&1 | tee "${SPECFEM_DEFAULT_OUTPUT}/output_solver.log"
     else
-        mpirun -np $nproc ./bin/xspecfem2D 2>&1 | tee "${SPECFEM_DEFAULT_OUTPUT}/output_solver.log"
+        $MPI_RUN $nproc ./bin/xspecfem2D 2>&1 | tee "${SPECFEM_DEFAULT_OUTPUT}/output_solver.log"
     fi
     local t_solver_end=$(get_time)
     log_time "SPECFEM2D solver (${nproc} procs, ${NSTEP} steps, ${PROFILE})" "$t_solver_start" "$t_solver_end"
